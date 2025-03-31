@@ -3,3 +3,7 @@ out
 .env
 assets/
 samples/
+aws/
+notes.txt
+learn-file-storage-s3-golang-starter
+server.log

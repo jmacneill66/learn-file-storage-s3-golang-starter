@@ -1,19 +1,23 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
-
+	
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
-	db               database.Client
+	db               database.Client 
+	s3Client         *s3.Client
 	jwtSecret        string
 	platform         string
 	filepathRoot     string
@@ -31,7 +35,28 @@ type thumbnail struct {
 
 var videoThumbnails = map[uuid.UUID]thumbnail{}
 
+func newS3Client(region string) *s3.Client {
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+	if err != nil {
+		log.Fatalf("Unable to load SDK config, %v", err)
+	}
+	return s3.NewFromConfig(cfg)
+}
+
+func listS3Buckets(cfg *apiConfig) {
+	result, err := cfg.s3Client.ListBuckets(context.TODO(), &s3.ListBucketsInput{})
+	if err != nil {
+		log.Fatalf("failed to list buckets, %v", err)
+	}
+
+	for _, bucket := range result.Buckets {
+		log.Printf("Bucket: %s", *bucket.Name)
+	}
+}
+
 func main() {
+	log.SetOutput(os.Stdout) // Ensure logs go to console
+
 	godotenv.Load(".env")
 
 	pathToDB := os.Getenv("DB_PATH")
@@ -86,6 +111,7 @@ func main() {
 
 	cfg := apiConfig{
 		db:               db,
+		s3Client:         newS3Client(s3Region),
 		jwtSecret:        jwtSecret,
 		platform:         platform,
 		filepathRoot:     filepathRoot,
@@ -95,6 +121,7 @@ func main() {
 		s3CfDistribution: s3CfDistribution,
 		port:             port,
 	}
+	
 
 	err = cfg.ensureAssetsDir()
 	if err != nil {
@@ -106,28 +133,24 @@ func main() {
 	mux.Handle("/app/", appHandler)
 
 	assetsHandler := http.StripPrefix("/assets", http.FileServer(http.Dir(assetsRoot)))
-	mux.Handle("/assets/", cacheMiddleware(assetsHandler))
-
+	mux.Handle("/assets/", noCacheMiddleware(assetsHandler))
 	mux.HandleFunc("POST /api/login", cfg.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", cfg.handlerRefresh)
 	mux.HandleFunc("POST /api/revoke", cfg.handlerRevoke)
-
 	mux.HandleFunc("POST /api/users", cfg.handlerUsersCreate)
-
 	mux.HandleFunc("POST /api/videos", cfg.handlerVideoMetaCreate)
 	mux.HandleFunc("POST /api/thumbnail_upload/{videoID}", cfg.handlerUploadThumbnail)
 	mux.HandleFunc("POST /api/video_upload/{videoID}", cfg.handlerUploadVideo)
 	mux.HandleFunc("GET /api/videos", cfg.handlerVideosRetrieve)
 	mux.HandleFunc("GET /api/videos/{videoID}", cfg.handlerVideoGet)
-	mux.HandleFunc("GET /api/thumbnails/{videoID}", cfg.handlerThumbnailGet)
 	mux.HandleFunc("DELETE /api/videos/{videoID}", cfg.handlerVideoMetaDelete)
-
 	mux.HandleFunc("POST /admin/reset", cfg.handlerReset)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
 	}
+	listS3Buckets(&cfg)
 
 	log.Printf("Serving on: http://localhost:%s/app/\n", port)
 	log.Fatal(srv.ListenAndServe())
